@@ -341,3 +341,129 @@
     (ok true)
   )
 )
+
+;; Emergency Recovery - Restore Normal Operations
+(define-public (disable-emergency-mode)
+  (begin
+    (asserts! (is-eq tx-sender (var-get vault-admin)) (err ERR_UNAUTHORIZED))
+    (var-set emergency-mode false)
+    (print { event: "emergency-mode-disabled", admin: tx-sender, block: stacks-block-height })
+    (ok true)
+  )
+)
+
+;; Protocol Maintenance Controls
+(define-public (set-protocol-pause (paused bool))
+  (begin
+    (asserts! (is-eq tx-sender (var-get vault-admin)) (err ERR_UNAUTHORIZED))
+    (var-set protocol-paused paused)
+    (print { event: "protocol-pause-changed", paused: paused, admin: tx-sender })
+    (ok true)
+  )
+)
+
+;; Governance Timelock - Scheduled Yield Rate Adjustment
+(define-public (schedule-yield-rate-change (new-rate uint))
+  (begin
+    (asserts! (is-eq tx-sender (var-get vault-admin)) (err ERR_UNAUTHORIZED))
+    (asserts! (and (>= new-rate u0) (<= new-rate MAX_YIELD_RATE))
+      (err ERR_INVALID_YIELD_RATE)
+    )
+    
+    (map-set pending-admin-actions {
+      action: "set-yield-rate",
+      param: new-rate,
+    } { 
+      scheduled-at: stacks-block-height,
+      executed: false
+    })
+    
+    (print { 
+      event: "yield-rate-scheduled", 
+      new-rate: new-rate, 
+      execution-block: (+ stacks-block-height (var-get admin-actions-timelock))
+    })
+    (ok true)
+  )
+)
+
+;; Timelock Execution - Apply Scheduled Yield Rate Changes
+(define-public (execute-yield-rate-change (new-rate uint))
+  (let (
+      (scheduled-action (unwrap! 
+        (map-get? pending-admin-actions {
+          action: "set-yield-rate",
+          param: new-rate,
+        })
+        (err ERR_UNAUTHORIZED)
+      ))
+    )
+    (asserts! (is-eq tx-sender (var-get vault-admin)) (err ERR_UNAUTHORIZED))
+    (asserts! (not (get executed scheduled-action)) (err ERR_UNAUTHORIZED))
+    (asserts! (and (>= new-rate u0) (<= new-rate MAX_YIELD_RATE))
+      (err ERR_INVALID_YIELD_RATE)
+    )
+    (asserts!
+      (>= stacks-block-height
+        (+ (get scheduled-at scheduled-action) (var-get admin-actions-timelock))
+      )
+      (err ERR_TIMELOCK_NOT_EXPIRED)
+    )
+    
+    ;; Execute governance decision
+    (var-set yield-rate new-rate)
+    
+    ;; Mark action as completed
+    (map-set pending-admin-actions {
+      action: "set-yield-rate",
+      param: new-rate,
+    } { 
+      scheduled-at: (get scheduled-at scheduled-action),
+      executed: true
+    })
+    
+    (print { event: "yield-rate-updated", new-rate: new-rate })
+    (ok true)
+  )
+)
+
+;; Risk Management - Deposit Limit Configuration
+(define-public (set-max-deposit-limit (new-limit uint))
+  (begin
+    (asserts! (is-eq tx-sender (var-get vault-admin)) (err ERR_UNAUTHORIZED))
+    (asserts!
+      (and (>= new-limit MIN_DEPOSIT_LIMIT) (<= new-limit MAX_DEPOSIT_LIMIT))
+      (err ERR_INVALID_DEPOSIT_LIMIT)
+    )
+    (var-set max-deposit-limit new-limit)
+    (print { event: "deposit-limit-updated", new-limit: new-limit })
+    (ok true)
+  )
+)
+
+;; Governance Transition - Administrative Rights Transfer
+(define-public (set-admin (new-admin principal))
+  (begin
+    (asserts! (is-eq tx-sender (var-get vault-admin)) (err ERR_UNAUTHORIZED))
+    (asserts! (is-standard new-admin) (err ERR_UNAUTHORIZED))
+    (var-set vault-admin new-admin)
+    (print { event: "admin-transferred", old-admin: tx-sender, new-admin: new-admin })
+    (ok true)
+  )
+)
+
+;; Treasury Management - Vault Capitalization for Rewards
+(define-public (fund-vault (amount uint))
+  (begin
+    (asserts! (> amount u0) (err ERR_INSUFFICIENT_BALANCE))
+    (match (contract-call? 'ST1F7QA2MDF17S807EPA36TSS8AMEFY4KA9TVGWXT.sbtc-token 
+      transfer amount tx-sender (as-contract tx-sender) none
+    )
+      success (begin
+        (print { event: "vault-funded", amount: amount, funder: tx-sender })
+        (ok amount)
+      )
+      error (err ERR_DEPOSIT_FAILED)
+    )
+  )
+)
