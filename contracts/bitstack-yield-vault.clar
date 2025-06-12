@@ -218,3 +218,126 @@
     )
   )
 )
+
+;; Secure Withdrawal Function with State Consistency Guarantees
+(define-public (withdraw-sbtc (amount uint))
+  (let (
+      (current-deposit (get-user-deposit tx-sender))
+      (pending-rewards (calculate-pending-rewards tx-sender))
+    )
+    ;; Input validation and balance verification
+    (asserts! (> amount u0) (err ERR_INSUFFICIENT_BALANCE))
+    (asserts! (<= amount current-deposit) (err ERR_INSUFFICIENT_BALANCE))
+    
+    ;; Check-Effects-Interactions pattern for security
+    (map-set user-deposits tx-sender (- current-deposit amount))
+    (map-set user-rewards tx-sender
+      (+ (get-user-rewards tx-sender) pending-rewards)
+    )
+    (map-set last-deposit-block tx-sender stacks-block-height)
+    
+    ;; Execute withdrawal with rollback capability
+    (match (as-contract (contract-call? 'ST1F7QA2MDF17S807EPA36TSS8AMEFY4KA9TVGWXT.sbtc-token
+      transfer amount tx-sender tx-sender none
+    ))
+      success (begin
+        ;; Transaction logging for audit trail
+        (unwrap! (log-withdrawal tx-sender amount) (err ERR_WITHDRAW_FAILED))
+        (ok amount)
+      )
+      error (begin
+        ;; Atomic state rollback on transfer failure
+        (map-set user-deposits tx-sender current-deposit)
+        (map-set user-rewards tx-sender
+          (- (get-user-rewards tx-sender) pending-rewards)
+        )
+        (err ERR_WITHDRAW_FAILED)
+      )
+    )
+  )
+)
+
+;; Optimized Reward Claiming with Precision Accounting
+(define-public (claim-rewards)
+  (let (
+      (pending-rewards (calculate-pending-rewards tx-sender))
+      (accumulated-rewards (get-user-rewards tx-sender))
+      (total-rewards (+ accumulated-rewards pending-rewards))
+    )
+    ;; Reward availability and vault liquidity verification
+    (asserts! (> total-rewards u0) (err ERR_INSUFFICIENT_BALANCE))
+    (asserts! (<= total-rewards 
+      (unwrap! (get-vault-balance) (err ERR_INSUFFICIENT_VAULT_FUNDS))
+    ) (err ERR_INSUFFICIENT_VAULT_FUNDS))
+    
+    ;; State update with claim tracking
+    (map-set user-rewards tx-sender u0)
+    (map-set last-deposit-block tx-sender stacks-block-height)
+    (map-set user-total-claimed tx-sender
+      (+ (get-user-total-claimed tx-sender) total-rewards)
+    )
+    
+    ;; Reward distribution execution
+    (match (as-contract (contract-call? 'ST1F7QA2MDF17S807EPA36TSS8AMEFY4KA9TVGWXT.sbtc-token
+      transfer total-rewards tx-sender tx-sender none
+    ))
+      success (begin
+        ;; Success event logging
+        (unwrap! (log-reward-claim tx-sender total-rewards) (err ERR_WITHDRAW_FAILED))
+        (ok total-rewards)
+      )
+      error (begin
+        ;; Comprehensive state rollback on failure
+        (map-set user-rewards tx-sender accumulated-rewards)
+        (map-set user-total-claimed tx-sender
+          (- (get-user-total-claimed tx-sender) total-rewards)
+        )
+        (err ERR_WITHDRAW_FAILED)
+      )
+    )
+  )
+)
+
+;; Emergency Recovery Mechanism - Crisis Response Protocol
+(define-public (emergency-withdraw)
+  (begin
+    (asserts! (var-get emergency-mode) (err ERR_UNAUTHORIZED))
+    (let (
+        (user-deposit (get-user-deposit tx-sender))
+      )
+      (asserts! (> user-deposit u0) (err ERR_INSUFFICIENT_BALANCE))
+      
+      ;; Emergency state clearing (rewards forfeited for immediate liquidity)
+      (map-set user-deposits tx-sender u0)
+      (map-set user-rewards tx-sender u0)
+      
+      ;; Emergency fund release
+      (match (as-contract (contract-call? 'ST1F7QA2MDF17S807EPA36TSS8AMEFY4KA9TVGWXT.sbtc-token
+        transfer user-deposit tx-sender tx-sender none
+      ))
+        success (begin
+          (unwrap! (log-emergency-withdrawal tx-sender user-deposit) (err ERR_WITHDRAW_FAILED))
+          (ok user-deposit)
+        )
+        error (begin
+          ;; State restoration on emergency transfer failure
+          (map-set user-deposits tx-sender user-deposit)
+          (err ERR_WITHDRAW_FAILED)
+        )
+      )
+    )
+  )
+)
+
+;; PROTOCOL GOVERNANCE & ADMINISTRATION
+
+;; Immediate Emergency Response - Circuit Breaker Activation
+(define-public (enable-emergency-mode)
+  (begin
+    (asserts! (is-eq tx-sender (var-get vault-admin)) (err ERR_UNAUTHORIZED))
+    (var-set emergency-mode true)
+    (var-set protocol-paused true) ;; Cascade protection activation
+    (print { event: "emergency-mode-enabled", admin: tx-sender, block: stacks-block-height })
+    (ok true)
+  )
+)
