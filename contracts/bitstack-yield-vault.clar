@@ -105,3 +105,116 @@
     get-balance (as-contract tx-sender)
   )
 )
+
+;; Comprehensive protocol configuration snapshot
+(define-read-only (get-protocol-info)
+  {
+    yield-rate: (var-get yield-rate),
+    max-deposit-limit: (var-get max-deposit-limit),
+    emergency-mode: (var-get emergency-mode),
+    protocol-paused: (var-get protocol-paused),
+    admin: (var-get vault-admin),
+    timelock-period: (var-get admin-actions-timelock)
+  }
+)
+
+;; Advanced Yield Calculation Engine with Precision Controls
+(define-read-only (calculate-pending-rewards (user principal))
+  (let (
+      (user-deposit (get-user-deposit user))
+      (last-deposit (default-to u0 (map-get? last-deposit-block user)))
+      (current-block stacks-block-height)
+      (blocks-elapsed (if (> current-block last-deposit)
+        (- current-block last-deposit)
+        u0
+      ))
+    )
+    (if (or (is-eq user-deposit u0) (is-eq blocks-elapsed u0))
+      u0
+      ;; Enterprise-grade calculation with overflow protection
+      (let (
+          (yield-period-value (if (is-eq (var-get yield-period) u0)
+            u1
+            (var-get yield-period)
+          ))
+          ;; Anti-overflow protection (max ~69 days calculation window)
+          (blocks-elapsed-capped (if (> blocks-elapsed u10000)
+            u10000
+            blocks-elapsed
+          ))
+          ;; High-precision yield computation
+          (rate-factor (/ (* (var-get yield-rate) PRECISION_FACTOR) 
+                         (* u100 yield-period-value)))
+          (rewards-raw (/ (* user-deposit rate-factor blocks-elapsed-capped) 
+                         PRECISION_FACTOR))
+        )
+        ;; Economic safety bounds - prevent unrealistic reward calculations
+        (if (> rewards-raw (/ user-deposit u10))
+          (/ user-deposit u10) ;; Maximum 10% of deposit as safety ceiling
+          rewards-raw
+        )
+      )
+    )
+  )
+)
+
+;; Complete User Portfolio Dashboard
+(define-read-only (get-user-position (user principal))
+  (let (
+      (deposit (get-user-deposit user))
+      (rewards (get-user-rewards user))
+      (pending (calculate-pending-rewards user))
+      (total-claimed (get-user-total-claimed user))
+    )
+    {
+      deposit: deposit,
+      accumulated-rewards: rewards,
+      pending-rewards: pending,
+      total-rewards: (+ rewards pending),
+      total-claimed: total-claimed,
+      last-deposit-block: (default-to u0 (map-get? last-deposit-block user))
+    }
+  )
+)
+
+;; CORE PROTOCOL FUNCTIONS - User Operations
+
+;; Primary Deposit Function - Secure sBTC Staking with Yield Accrual
+(define-public (deposit-sbtc (amount uint))
+  (let (
+      (current-deposit (get-user-deposit tx-sender))
+      (new-total (+ current-deposit amount))
+    )
+    ;; Comprehensive pre-flight security validation
+    (asserts! (not (var-get protocol-paused)) (err ERR_UNAUTHORIZED))
+    (asserts! (not (var-get emergency-mode)) (err ERR_EMERGENCY_MODE_ACTIVE))
+    (asserts! (> amount u0) (err ERR_INSUFFICIENT_BALANCE))
+    (asserts! (<= new-total (var-get max-deposit-limit)) (err ERR_DEPOSIT_LIMIT_REACHED))
+    
+    ;; Yield calculation checkpoint before state modification
+    (let ((pending-rewards (calculate-pending-rewards tx-sender)))
+      ;; Atomic sBTC transfer to vault custody
+      (match (contract-call? 'ST1F7QA2MDF17S807EPA36TSS8AMEFY4KA9TVGWXT.sbtc-token
+        transfer amount tx-sender (as-contract tx-sender) none
+      )
+        success (begin
+          ;; Update user state with atomic precision
+          (map-set user-rewards tx-sender
+            (+ (get-user-rewards tx-sender) pending-rewards)
+          )
+          (map-set user-deposits tx-sender new-total)
+          (map-set last-deposit-block tx-sender stacks-block-height)
+          
+          ;; Event logging for analytics and transparency
+          (unwrap! (log-deposit tx-sender amount) (err ERR_DEPOSIT_FAILED))
+          
+          ;; Real-time protocol metrics update
+          (unwrap! (update-daily-stats amount u0) (err ERR_DEPOSIT_FAILED))
+          
+          (ok amount)
+        )
+        error (err ERR_DEPOSIT_FAILED)
+      )
+    )
+  )
+)
