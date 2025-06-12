@@ -467,3 +467,125 @@
     )
   )
 )
+
+;; PROTOCOL UTILITIES & INTERNAL MECHANICS
+
+;; Global State Synchronization - Yield Distribution Tracking
+(define-public (update-global-accumulator)
+  (let (
+      (blocks-since-last (- stacks-block-height (var-get last-yield-distribution)))
+      (rate-contribution (* blocks-since-last (var-get yield-rate)))
+    )
+    (var-set global-accumulator
+      (+ (var-get global-accumulator) rate-contribution)
+    )
+    (var-set last-yield-distribution stacks-block-height)
+    (ok true)
+  )
+)
+
+;; Analytics Engine - Protocol Performance Metrics
+(define-private (update-daily-stats (deposit-amount uint) (reward-amount uint))
+  (let (
+      (current-day (/ stacks-block-height BLOCKS_PER_DAY))
+      (current-stats (default-to 
+        { total-deposits: u0, total-rewards: u0, active-users: u0 }
+        (map-get? daily-stats current-day)
+      ))
+    )
+    (map-set daily-stats current-day {
+      total-deposits: (+ (get total-deposits current-stats) deposit-amount),
+      total-rewards: (+ (get total-rewards current-stats) reward-amount),
+      active-users: (+ (get active-users current-stats) u1)
+    })
+    (ok (var-get next-event-id))
+  )
+)
+
+;; EVENT LOGGING & AUDIT TRAIL SYSTEM
+
+;; Deposit Transaction Logging
+(define-private (log-deposit (user principal) (amount uint))
+  (let ((event-id (var-get next-event-id)))
+    (print {
+      event: "deposit",
+      user: user,
+      amount: amount,
+      id: event-id,
+      block: stacks-block-height
+    })
+    (var-set next-event-id (+ event-id u1))
+    (ok event-id)
+  )
+)
+
+;; Withdrawal Transaction Logging
+(define-private (log-withdrawal (user principal) (amount uint))
+  (let ((event-id (var-get next-event-id)))
+    (print {
+      event: "withdrawal",
+      user: user,
+      amount: amount,
+      id: event-id,
+      block: stacks-block-height
+    })
+    (var-set next-event-id (+ event-id u1))
+    (ok event-id)
+  )
+)
+
+;; Reward Distribution Event Logging
+(define-private (log-reward-claim (user principal) (amount uint))
+  (let ((event-id (var-get next-event-id)))
+    (print {
+      event: "reward-claim",
+      user: user,
+      amount: amount,
+      id: event-id,
+      block: stacks-block-height
+    })
+    (var-set next-event-id (+ event-id u1))
+    (ok event-id)
+  )
+)
+
+;; Emergency Response Event Logging
+(define-private (log-emergency-withdrawal (user principal) (amount uint))
+  (let ((event-id (var-get next-event-id)))
+    (print {
+      event: "emergency-withdrawal",
+      user: user,
+      amount: amount,
+      id: event-id,
+      block: stacks-block-height
+    })
+    (var-set next-event-id (+ event-id u1))
+    (ok event-id)
+  )
+)
+
+;; LEGACY COMPATIBILITY & MIGRATION SUPPORT
+
+;; Legacy Immediate Yield Rate Update (Backwards Compatibility)
+(define-public (set-yield-rate (new-rate uint))
+  (begin
+    (asserts! (is-eq tx-sender (var-get vault-admin)) (err ERR_UNAUTHORIZED))
+    (asserts! (and (>= new-rate u0) (<= new-rate MAX_YIELD_RATE)) 
+      (err ERR_INVALID_YIELD_RATE)
+    )
+    (var-set yield-rate new-rate)
+    (print { event: "yield-rate-set-immediate", new-rate: new-rate })
+    (ok true)
+  )
+)
+
+;; Legacy Token Contract Migration Support
+(define-public (update-token-contract (new-address principal))
+  (begin
+    (asserts! (is-eq tx-sender (var-get vault-admin)) (err ERR_UNAUTHORIZED))
+    (asserts! (is-standard new-address) (err ERR_INVALID_TOKEN_CONTRACT))
+    (var-set token-contract-address new-address)
+    (print { event: "token-contract-updated", new-address: new-address })
+    (ok true)
+  )
+)
